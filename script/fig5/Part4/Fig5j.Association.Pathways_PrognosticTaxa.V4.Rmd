@@ -1,0 +1,730 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-03-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1 load data
+```{r}
+library(openxlsx)
+library(tidyverse)
+library(ggpubr)
+library(metastat)
+library(ppcor)
+```
+
+```{r}
+pr.gene.ucan <- readRDS("../../../2.SourceData/00.SourceData/Gene.UCAN.rds")
+pr.gene.icam <- readRDS("../../../2.SourceData/00.SourceData/Gene.ICAM.rds")
+
+pr.path.ucan <- readRDS("../../../2.SourceData/00.SourceData/Pathway.UCAN.selected.rds")
+pr.path.icam <- readRDS("../../../2.SourceData/00.SourceData/Pathway.ICAM.selected.rds")
+
+phe.ucan <- read.csv("../../../2.SourceData/01.phe/20230727-CRC-SW.20230704-v5.clinical.csv",row.names = 1)
+phe.icam <- readRDS("../../../2.SourceData/00.SourceData/phenotype.ICAM.rds")
+
+pr.taxa.ucan <- readRDS("../../../2.SourceData/00.SourceData/Kraken2.UCAN.WGS.Splited.rds")
+pr.taxa.icam <- readRDS("../../../2.SourceData/00.SourceData/Kraken2.ICAM.WGS.rds")
+
+lst.prognosis <- read.xlsx("HZ-List.Prognosis.Taxa.V2.xlsx",sheet = 3,rowNames = T)
+
+
+# reads number
+nReads <- readRDS("../../../2.SourceData/00.SourceData/ReadsNumber.UCAN_ICAM.rds")
+```
+
+
+## 2  preprocess
+```{r}
+# taxa
+pr.taxa.uu <- pr.taxa.ucan$UU.Tumor
+pr.taxa.um <- pr.taxa.ucan$UM.Tumor
+all(rownames(lst.prognosis) %in% colnames(pr.taxa.uu))
+
+pr.taxa.uu <- pr.taxa.uu[,rownames(lst.prognosis)]
+pr.taxa.um <- pr.taxa.um[,rownames(lst.prognosis)]
+pr.taxa.icam <- pr.taxa.icam[,rownames(lst.prognosis)]
+```
+
+```{r}
+phe.icam <- phe.icam[rownames(pr.taxa.icam),]
+
+# without stage IV 
+phe.ucan <- phe.ucan[phe.ucan$Tumor_Stage!="IV",]
+phe.icam <- phe.icam[which(phe.icam$AJCC_path_stage!=4),]
+
+phe.ucan$Tumor_Site <- ifelse(phe.ucan$Tumor_Site=="Right_Colon",1,2)
+phe.ucan$Gender <- ifelse(phe.ucan$Gender=="Male",1,2)
+phe.icam$Location <- ifelse(phe.icam$Location=="Right",1,2)
+phe.icam$Gender <- ifelse(phe.icam$Gender=="MALE",1,2)
+
+phe.uu <- phe.ucan[phe.ucan$Sample_Center=="UU",]
+phe.um <- phe.ucan[phe.ucan$Sample_Center=="UM",]
+phe.uu$ReadsNumber <- nReads$UU.Tumor[rownames(phe.uu),4]
+phe.um$ReadsNumber <- nReads$UM.Tumor[rownames(phe.um),4]
+phe.icam$ReadsNumber <- nReads$ICAM.Tumor.WGS[rownames(phe.icam),4]
+
+# confounders
+adj.uu <- phe.uu[,c("Age_At_Diagnosis","Gender","Tumor_Site","ReadsNumber")]
+adj.um <- phe.um[,c("Age_At_Diagnosis","Gender","Tumor_Site","ReadsNumber")]
+adj.icam <- phe.icam[,c("Age","Gender","Location","ReadsNumber")]
+```
+
+
+```{r}
+#a <- "ABHD10	SLC35D1	UGDH	UGP2	UGT1A1	UGT1A10	UGT1A3	UGT1A4	UGT1A5	UGT1A6	UGT1A7	UGT1A8	UGT1A9	UGT2A1	UGT2A2	UGT2A3	UGT2B10	UGT2B11	UGT2B15	UGT2B17	UGT2B28	UGT2B4	UGT2B7	UGT3A1	UGT3A2"
+#a <- unlist(strsplit(a,"\t"))
+#a <- a[a %in% rownames(pr.gene.ucan)]
+lst.gene <- c(
+  "Hypoxia","NFkB","TNFa","GOBP_CELLULAR_GLUCURONIDATION", "REACTOME_GLUCURONIDATION", "WP_GLUCURONIDATION" ,
+  "IL1A","IL1B","IL6","CSF2","CSF3",
+  "CCL3","CCL4","CCL20","CXCL8",
+  "ICAM1","PTX3",
+  "HIF1A","UGT1A1","UGT1A8","UGT1A10"
+)
+
+lst.path <- pr.path.ucan$codebook
+pr.path.ucan <- pr.path.ucan$pathway
+pr.path.icam <- pr.path.icam$pathway
+
+pr.gene.ucan <- pr.gene.ucan[rownames(pr.gene.ucan) %in% lst.gene,]
+pr.gene.icam <- pr.gene.icam[rownames(pr.gene.icam) %in% lst.gene,]
+pr.path.ucan <- pr.path.ucan[,colnames(pr.path.ucan) %in% lst.gene]
+pr.path.icam <- pr.path.icam[,colnames(pr.path.icam) %in% lst.gene]
+pr.gene.ucan <- as.data.frame(t(pr.gene.ucan))
+pr.gene.icam <- as.data.frame(t(pr.gene.icam))
+
+
+# combine data
+pr.ucan <- cbind(pr.gene.ucan,pr.path.ucan[rownames(pr.gene.ucan),])
+pr.icam <- cbind(pr.gene.icam,pr.path.icam[rownames(pr.gene.icam),])
+
+pr.ucan <- pr.ucan[rownames(phe.ucan),]
+pr.icam <- pr.icam[rownames(phe.icam),]
+```
+
+
+
+
+
+
+## 3.Pathway analysis: 
+### prognostic taxa
+```{r}
+a <- readRDS("../../../2.SourceData/00.SourceData/Pathway_cancerPathway.UCAN.rds")
+b <- readRDS("../../../2.SourceData/00.SourceData/Pathway_Celligner.UCAN.rds")
+c <- readRDS("../../../2.SourceData/00.SourceData/Pathway_cibersort.UCAN.rds")
+b <- as.data.frame(t(b))
+a <- a[rownames(a) %in% rownames(pr.taxa.uu),]
+b <- b[rownames(a),]
+c <- c[rownames(a),]
+
+pr.path.ucan <- cbind(a,b,c)
+#pccAll.uu <- pcc_between(pr.taxa.uu,pr.path.ucan,adj.uu)
+pccAll.uu <- readRDS("PCC.allPathways.rds")
+#pr.path.ucan <- readRDS("../../../2.SourceData/00.SourceData/Pathway.UCAN.selected.rds")
+#pr.path.ucan <- pr.path.ucan$pathway
+#pccAll.uu <- pcc_between(pr.taxa.uu,pr.path.ucan,adj.uu)
+
+
+p <- pccAll.uu[,grep("pvalue",colnames(pccAll.uu))]
+r <- pccAll.uu[,grep("rho",colnames(pccAll.uu))]
+colnames(p) <- gsub(" pvalue","",colnames(p))
+colnames(r) <- gsub(" rho","",colnames(r))
+
+p <- p[rownames(lst.prognosis)[lst.prognosis$tumor==1],]
+r <- r[rownames(p),]
+
+for(x in 1:ncol(p)){
+  p[,x] <- p.adjust(p[,x],method = "BH")
+}
+
+r[p>=0.05] <- 0
+
+n <- data.frame(
+  Negative = apply(r,2,function(x) sum(x<0)),
+  Positive = apply(r,2,function(x) sum(x>0))
+)
+n$Total <- rowSums(n)
+```
+
+
+```{r}
+# cancer pathways
+n1 <- n[rownames(lst.path)[lst.path$Group=="Cancer-pathway"],]
+
+# CIBER
+n2 <- n[rownames(lst.path)[lst.path$Group=="Immune-pathway"],]
+
+# REACTOME pathways 
+a <- n[grep("REACTOME",rownames(n)),]
+a <- a[order(a$Total,decreasing = T),]
+a <- a[a$Total>=10,]
+path2gene <- read.csv("c2.cp.reactome.v2023.2.Hs.symbols.gmt",sep = "\t",header = F)
+path2gene <- path2gene[path2gene$V1 %in% rownames(a),]
+setdiff(rownames(a), path2gene$V1)
+a <- a[path2gene$V1,]
+n3 <- a
+
+# combine both types of pathways
+datN <- rbind(n1,n2,n3)
+```
+
+### validation cohorts
+```{r}
+# PCC for UM
+a <- readRDS("../../../2.SourceData/00.SourceData/Pathway_cancerPathway.UCAN.rds")
+b <- readRDS("../../../2.SourceData/00.SourceData/Pathway_Celligner.UCAN.rds")
+c <- readRDS("../../../2.SourceData/00.SourceData/Pathway_cibersort.UCAN.rds")
+b <- as.data.frame(t(b))
+a <- a[rownames(a) %in% rownames(pr.taxa.um),]
+b <- b[rownames(a),]
+c <- c[rownames(a),]
+a <- cbind(a,b,c)
+b <- pr.taxa.um
+a <- a[,rownames(datN)]
+a <- a[rownames(a) %in% rownames(b),]
+a <- a[rownames(b),]
+b <- b[,rownames(lst.prognosis)[lst.prognosis$tumor==1]]
+
+pccUM <- pcc_between(b,a,adj.um)
+```
+
+```{r}
+a <- readRDS("../../../2.SourceData/00.SourceData/Pathway_cancerPathway.ICAM.rds")
+b <- readRDS("../../../2.SourceData/00.SourceData/Pathway_Celligner.ICAM.rds")
+c <- readRDS("../../../2.SourceData/00.SourceData/Pathway_cibersort.ICAM.rds")
+b <- as.data.frame(t(b))
+a <- a[rownames(a) %in% rownames(pr.taxa.icam),]
+b <- b[rownames(a),]
+c <- c[rownames(a),]
+a <- cbind(a,b,c)
+
+b <- pr.taxa.icam
+a <- a[,rownames(datN)]
+a <- a[rownames(a) %in% rownames(b),]
+a <- a[rownames(b),]
+b <- b[,rownames(lst.prognosis)[lst.prognosis$tumor==1]]
+
+pccICAM <- pcc_between(b,a,adj.icam)
+```
+
+
+```{r}
+# load data for pcc of gene
+lst.gene <- c(
+  "IL1A","IL1B","IL6","CSF2","CSF3",
+  "CCL3","CCL4","CCL20","CXCL8",
+  "ICAM1","PTX3",
+  "HIF1A"
+)
+
+loadData <- function(l){
+  load("Association.Pathways_PrognosticTaxa.V2.rd")
+  x <- paste(
+    rep(l,each=3),
+    rep(c("rho","pvalue","FDR"),length(l))
+  )
+  list(
+    UU = pcc.uu[,x],
+    UM = pcc.um[,x],
+    ICAM = pcc.icam[,x]
+  )
+}
+
+dat.gene <- loadData(lst.gene)
+
+# combine data
+combineData <- function(a,b){
+  a <- a[,setdiff(colnames(a),colnames(b))]
+  a <- cbind(a,b[rownames(a),,drop=F])
+  # readjust P-values
+  for(x in grep("pvalue",colnames(a))){
+    a[,x+1] <- p.adjust(a[,x],method = "BH")
+  }
+  a
+}
+
+dat.um <- combineData(dat.gene$UM[rownames(pccUM),],pccUM)
+dat.icam <- combineData(dat.gene$ICAM[rownames(pccUM),],pccICAM)
+dat.uu <- combineData(dat.gene$UU[rownames(pccUM),],pccAll.uu[,colnames(pccUM)])
+
+
+
+dat.uu <- dat.uu[,colnames(dat.um)]
+dat.icam <- dat.icam[,colnames(dat.um)]
+```
+
+
+
+
+## 5.heatmap
+```{r}
+Short2LongData <- function(dat){
+  dat.rho <- dat[,grep("rho",colnames(dat)),drop=F]
+  dat.pval <- dat[,grep("pval",colnames(dat)),drop=F]
+  dat.fdr <- dat[,grep("FDR",colnames(dat)),drop=F]
+  colnames(dat.rho) <- colnames(dat.pval) <- colnames(dat.fdr) <- gsub(" rho","",colnames(dat.rho))
+  # short to long
+  dat.rho <- dat.rho %>% rownames_to_column(var = "y") %>% gather(x,rho,-y)
+  dat.pval <- dat.pval %>% rownames_to_column(var = "y") %>% gather(x,pval,-y)
+  dat.fdr <- dat.fdr %>% rownames_to_column(var = "y") %>% gather(x,FDR,-y)
+  # combine data
+  a <- full_join(dat.rho,dat.pval,by=c("x","y")) %>%
+    full_join(dat.fdr,by=c("x","y"))
+  a$value <- NA
+  a$value[a$pval>=0.05 & a$rho>0] <- 0.5
+  a$value[a$pval>=0.05 & a$rho<=0] <- 0.1
+  a$value[a$pval<0.05] <- 1
+  a$value[a$pval<0.01] <- 2
+  a$value[a$pval<0.001] <- 3
+  a$value[a$pval<0.0001] <- 4
+  a$value <- a$value * sign(a$rho)
+  a$col <- factor(as.character(a$value),levels = rev(as.character(c(-4,-3,-2,-1,-0.1,0.5,1,2,3,4))))
+  a
+}
+
+ann.taxa <- read.xlsx("List.PrognosisTaxa.PathwayRelated.2.xlsx",rowNames = T)
+l <- read.xlsx("../Association.HR.taxa/HZ-List.Prognosis.Taxa.V2.xlsx",sheet = 3,rowNames = T)
+```
+
+
+```{r}
+# combine data
+pcc.uu <- dat.uu
+pcc.um <- dat.um
+pcc.icam <- dat.icam
+
+a <- Short2LongData(pcc.uu)
+b <- Short2LongData(pcc.um)
+c <- Short2LongData(pcc.icam)
+a$Group <- "UU"
+b$Group <- "UM"
+c$Group <- "ICAM"
+dat <- rbind(a,b,c)
+
+dat$taxa_Group <- ifelse(dat$y %in% rownames(l)[l$Group=="longer OS"],"2","1")
+dat$lab <- ifelse(dat$pval<0.05,"#","")
+dat$lab[dat$FDR<0.05] <- "*"
+dat$Group <- factor(dat$Group,levels = c("UU","UM","ICAM"))
+
+# reshape data frame
+a <- dat[dat$Group=="UU",]
+b <- dat[dat$Group=="UM",]
+c <- dat[dat$Group=="ICAM",]
+
+dat <- data.frame(
+  y = a$y, x=a$x,
+  r.uu = a$rho, P.uu = a$pval, BH.uu = a$FDR,
+  r.um = b$rho, P.um = b$pval, BH.um = b$FDR,
+  r.icam = c$rho, P.icam = c$pval, BH.icam = c$FDR
+)
+
+# add validation infor
+dat$fill <- NA
+dat$fill[dat$r.uu<0 & dat$P.uu<0.05] <- "n1"
+dat$fill[dat$r.uu<0 & dat$BH.uu<0.05] <- "n2"
+dat$fill[dat$r.uu>0 & dat$P.uu<0.05] <- "p1"
+dat$fill[dat$r.uu>0 & dat$BH.uu<0.05] <- "p2"
+dat$fill[is.na(dat$fill)] <- "ns"
+
+dat$val1 <- NA
+dat$val2 <- NA
+dat$val1[dat$fill %in% c("n1","n2") & (dat$r.um<0 & dat$P.um<0.05)] <- "UM"
+dat$val1[dat$fill %in% c("p1","p2") & (dat$r.um>0 & dat$P.um<0.05)] <- "UM"
+dat$val2[dat$fill %in% c("n1","n2") & (dat$r.icam<0 & dat$P.icam<0.05)] <- "ICAM"
+dat$val2[dat$fill %in% c("p1","p2") & (dat$r.icam>0 & dat$P.icam<0.05)] <- "UM"
+dat$val <- dat$val1
+dat$val[dat$val1=="UM" & dat$val2=="ICAM"] <- "Both"
+dat$val[is.na(dat$val) & !is.na(dat$val2)] <- "ICAM"
+dat$fill <- factor(dat$fill,levels = c("n2","n1","ns","p1","p2"))
+dat$Group <-  ifelse(as.character(dat$y) %in% rownames(l)[l$Group=="shorter OS"],1,2)
+
+dat <- dat[dat$x %in% dat$x[dat$BH.uu<0.05],]
+dat2 <- dat
+```
+
+
+```{r}
+# more strict:
+# only remain pathways with more than 10 taxa validated
+a <- dat[dat$x %in% c("Hypoxia","NFkB","TNFa"),]
+b <- dat[dat$x %in% lst.gene,]
+lst.reactome <- read.xlsx("Summary.selectedReactomePathways.xlsx",rowNames = T)
+lst.reactome <- lst.reactome[!lst.reactome$exactSource %in%　lst.reactome$Parents,]
+c <- dat[dat$x %in% rownames(lst.reactome),]
+
+dat <- rbind(a,b,c)
+dat$x <- factor(dat$x,levels = rev(c("Hypoxia","HIF1A","NFkB","TNFa",lst.gene[-length(lst.gene)],rownames(lst.reactome))))
+dat$g <- NA
+dat$g[dat$x %in% c("Hypoxia","HIF1A")] <- "1"
+dat$g[dat$x %in% c("NFkB","TNFa",lst.gene[-length(lst.gene)])] <- "2"
+dat$g[dat$x %in% rownames(lst.reactome)] <- "3"
+
+#
+ann <- lst.reactome
+ann$Category <- gsub(";.*","",ann$Categories)
+ann <- ann[,"Category",drop=F]
+a <- data.frame(
+  row.names = c("Hypoxia","HIF1A","NFkB","TNFa",lst.gene[-length(lst.gene)]),
+  Category = rep("Cancer-related pathways",15)
+)
+ann <- rbind(a,ann)
+
+x <- c("Cancer-related pathways","Immune System","Signal Transduction","Metabolism",
+      "Cellular responses to stimuli","Circadian Clock"
+      )
+ann$Category[!ann$Category%in%x] <- "Others"
+ann$Category <- factor(ann$Category,levels =c(x,"Others"))
+
+
+dat <- dat[order(dat$Group),]
+y <- dat[,c("y","Group","val","BH.uu")]
+y <- na.omit(y)
+y <- y[y$BH.uu<0.05,]
+y <- y[!duplicated(paste(y$y,y$Group)),]
+y$y <- as.character(y$y)
+#y <- y[c(2,3,6:nrow(y)),]
+
+l <- lst.prognosis[y$y,]
+y$Phylum <- l$Phylum
+y$Family <- l$Family
+y$Family[!y$Family %in% c("f__Lachnospiraceae","f__Ruminococcaceae","f__Clostridiaceae","f__Eubacteriaceae")] <- "Others"
+y$Family <- factor(y$Family,levels = c("f__Lachnospiraceae","f__Ruminococcaceae","f__Clostridiaceae","f__Eubacteriaceae","Others"))
+y$TMP <- gsub(".__","",y$y)
+
+y <- y[order(y$TMP),]
+y <- y[order(y$Family),]
+y <- y[order(y$Phylum),]
+y <- y[order(y$Group),]
+
+dat <- dat[dat$y %in% as.character(y$y),]
+dat$y <- factor(dat$y,levels = as.character(y$y))
+```
+
+
+```{r}
+p <- 
+ggplot(dat,aes(x=y,y=x))+
+  geom_tile(aes(fill=fill),color="gray50")+
+  geom_point(data=dat[dat$val %in% c("UM","Both"),],shape=17)+
+  geom_point(data=dat[dat$val %in% c("ICAM","Both"),],shape=1,size=3)+
+  facet_grid(g~Group,scales = "free",space = "free")+
+  scale_fill_manual(values = c("#5c86c5","#90adda","white","#eec6c6","#ce5b59"))+
+  scale_x_discrete(expand = expansion(mult = c(0,0)))+
+  scale_y_discrete(expand = expansion(mult = c(0,0)))+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 45,vjust = 0.5,hjust = 1,size=11),
+    axis.text = element_text(color=1,size = 14),
+    axis.title = element_text(size = 14,color=1),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    strip.text = element_blank()
+  )
+p
+```
+
+
+```{r}
+ann$x <- "Category"
+ann$y <- factor(rownames(ann),levels = levels(dat$x))
+ann$g <- ""
+ann$g[ann$y %in% c("Hypoxia","HIF1A")] <- "1"
+ann$g[ann$y %in% c("NFkB","TNFa",lst.gene[-length(lst.gene)])] <- "2"
+ann$g[ann$y %in% rownames(lst.reactome)] <- "3"
+ann$g2 <- "Annotation"
+
+library(RColorBrewer)
+col <- brewer.pal(8,"Set2")
+
+p3 <- 
+ggplot(ann,aes(x=x,y=y,fill=Category))+
+  geom_tile()+
+  facet_grid(g~g2,scales = "free",space = "free")+
+  scale_fill_manual(values = col)+
+  scale_x_discrete(expand = expansion(mult = c(0,0)))+
+  scale_y_discrete(expand = expansion(mult = c(0,0)))+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 270,vjust = 0.5,hjust = 0,size=11),
+    axis.text = element_text(color=1,size = 14),
+    axis.title = element_text(size = 14,color=1),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    strip.text = element_blank()
+  )
+
+
+p <- p + theme(axis.text.y = element_blank())
+ggarrange(p3,p,nrow = 1,ncol = 2,align = "h",widths = c(6,5))
+ggsave("tmp10.pdf",width = 23.7,height = 12)
+
+```
+
+
+
+
+
+
+
+
+```{r}
+a <- dat
+a$y <- droplevels(a$y)
+d1 <- pr.taxa.uu[,levels(a$y)]
+d2 <- pr.taxa.um[,levels(a$y)]
+d3 <- pr.taxa.icam[,levels(a$y)]
+mrs <- readRDS("../MRS/MRS.UCAN_ICAM.WGS.rds")
+mrs$UU.NAT.WGS <- NULL
+mrs$UM.NAT.WGS <- NULL
+
+mrs <- lapply(mrs,function(x){
+  x$Group = ifelse(x$Index >= median(x$Index),"High","Low")
+  x$Group = factor(x$Group,levels = c("Low","High"))
+  x
+})
+
+colnames(d1) <- make.names(colnames(d1))
+colnames(d2) <- make.names(colnames(d2))
+colnames(d3) <- make.names(colnames(d3))
+
+r1 <- wilcox.customized(d1,mrs$UU.Tumor.WGS[,2,drop=F])
+r2 <- wilcox.customized(d2,mrs$UM.Tumor.WGS[,2,drop=F])
+r3 <- wilcox.customized(d3,mrs$ICAM.WGS[,2,drop=F])
+rownames(r1) <- rownames(r2) <- rownames(r3) <- levels(a$y)
+
+
+r <- cbind(r1[,4,drop=F],r2[,4,drop=F],r3[,4,drop=F])
+f <- cbind(r1[,2,drop=F],r2[,2,drop=F],r3[,2,drop=F])
+colnames(r) <- colnames(f) <- c("UU","UM","AC-ICAM")
+
+n <- apply(f,2,function(x) ifelse(x<0.05,"*",""))
+
+pheatmap::pheatmap(r,display_numbers = n)
+
+dat <- rbind(
+  r1[,c(1:4)] %>% rownames_to_column(var = "taxa") %>% mutate(Group="UU"),
+  r2[,c(1:4)] %>% rownames_to_column(var = "taxa") %>% mutate(Group="UM"),
+  r3[,c(1:4)] %>% rownames_to_column(var = "taxa") %>% mutate(Group="AC-ICAM")
+)
+dat$lab <- ifelse(dat$FDR<0.05,"*","")
+dat$taxa <- factor(dat$taxa,levels = levels(a$y))
+
+ggplot(dat,aes(x=taxa,y=Group,fill=Effectsize))+
+  geom_tile()+
+  geom_text(aes(label=lab),vjust=0.75)+
+  scale_fill_gradient2(mid = "white",low = "blue",high = "red",midpoint = 0)+
+  scale_x_discrete(expand = expansion(mult = c(0,0)))+
+  scale_y_discrete(expand = expansion(mult = c(0,0)))+
+  theme_bw()+
+  theme(
+    axis.text.x = element_text(angle = 270,vjust = 0.5,hjust = 0,size=11),
+    axis.text = element_text(color=1,size = 14),
+    axis.title = element_text(size = 14,color=1),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    strip.text = element_blank()
+  )
+```
+
+
+
+
+
+
+```{r}
+#
+save.image("Association.Pathways_PrognosticTaxa.V4.rd")
+load("Association.Pathways_PrognosticTaxa.V4.rd")
+```
+
+```{r}
+
+x <- levels(dat$x)
+x <- paste0(rep(x,each=3)," ",rep(c("rho","pvalue","FDR"),length(x)))
+
+a <- pcc.uu[,x]
+b <- pcc.um[,x]
+c <- pcc.icam[,x]
+
+out <- list(UU=a,UM=b,ICAM=c)
+write.xlsx(out,"Suppl.table.association.gene_taxa.xlsx",rowNames=T)
+```
+
+
+
+
+```{r}
+# summary of genes in REACTOME pathway
+a$N.genes <- apply(path2gene[,-c(1,2)],1,function(x) sum(x!=""))
+a$Genes <- apply(path2gene[,-c(1,2)],1,function(x){x=x[x!=""];paste(x,collapse = ";")})
+
+# pcc for genes
+b <- unlist(strsplit(a$Genes,";"))
+b <- union(b,NULL)
+
+pr.gene.ucan <- readRDS("../../../2.SourceData/00.SourceData/Gene.UCAN.rds")
+pr.gene.ucan <- pr.gene.ucan[b,]
+pr.gene.ucan <- as.data.frame(t(pr.gene.ucan))
+pr.gene.ucan <- pr.gene.ucan[,which(apply(pr.gene.ucan,2,function(x) sum(x>0)>5))]
+#pccGene <- pcc_between(pr.taxa.uu[,rownames(p)],pr.gene.ucan,adj.uu)
+saveRDS(pccGene,"PCC.gene.rds")
+pccGene <- readRDS("pcc.gene.rds")
+
+p.gene <- pccGene[,grep("FDR",colnames(pccGene))]
+n.gene <- data.frame(n=apply(p.gene,2,function(x) sum(x<0.05)))
+colnames(p.gene) <- gsub(" FDR","",colnames(p.gene))
+
+a$N.genes.sig <- NA
+a$Genes.sig <- NA
+for(x in 1:nrow(a)){
+  g <- unlist(strsplit(a$Genes[x],";"))
+  tmp <- n.gene[g,,drop=F]
+  tmp <- na.omit(tmp)
+  a$N.genes.sig[x] <- sum(tmp[,1]>0)
+  tmp <- rownames(tmp)[tmp[,1]>0]
+  a$Genes.sig[x] <- paste(tmp,collapse = ";")
+}
+
+ann <- read.xlsx("../../../../CRC/3.Results/03.function/pathway/REACTOME/Pathways.annotation.xlsx",rowNames = T)
+a$Category <- ann[rownames(a),4]
+write.xlsx(a,"pcc.prognosticTaxa_Pathway.xlsx",rowNames=T)
+
+dat.N <- a
+
+save.image("Association.Pathways_PrognosticTaxa.V2.rd")
+```
+
+
+```{r}
+# T vs. N
+a <- fread("../../../2.SourceData/02.profile/geneExpression/Celligner_ms_align_data_mxT.csv.gz")
+a <- as.data.frame(a)
+rownames(a) <- a$V1
+a <- a[,-1]
+a <- a[tmp,]
+a <- as.data.frame(t(a))
+a <- a[grep("UM",rownames(a),invert = T),]
+g <- data.frame(row.names = rownames(a),Group=ifelse(grepl("T",rownames(a)),"Tumor","NAT"))
+g$PatientID <- gsub(".*\\.(U.*)\\..*","\\1",rownames(g))
+g <- g[g$PatientID %in% g$PatientID[g$Group=="NAT"],]
+g <- g[g$PatientID %in% rownames(phe.ucan)[phe.ucan$Normal_RNA_Control_Type=="Tumor_Adjacent_Tissues"],]
+a <- a[rownames(g),]
+g$Stage <- g$Group
+res <- wilcox.Paired(a,g[,-1],paired="PatientID",group="Stage")
+write.xlsx(res,"Wilcox.pathway.xlsx",rowNames=T)
+```
+
+
+```{r}
+a <- pr.path.ucan
+b <- pr.taxa.uu[rownames(a),]
+a <- cbind(a,b)
+
+
+l <- "REACTOME_BMAL1_CLOCK_NPAS2_ACTIVATES_CIRCADIAN_GENE_EXPRESSION"
+b <- r[order(abs(r[,l]),decreasing = T),]
+scatterplot(a,x="g__Blautia",y=l)+
+  theme_pubr()
+
+l <- "REACTOME_EICOSANOID_LIGAND_BINDING_RECEPTORS"
+b <- r[order(abs(r[,l]),decreasing = T),]
+scatterplot(a,x="g__Blautia",y=l)+
+  theme_pubr()
+
+l <- "REACTOME_ATF4_ACTIVATES_GENES_IN_RESPONSE_TO_ENDOPLASMIC_RETICULUM_STRESS"
+b <- r[order(abs(r[,l]),decreasing = T),]
+scatterplot(a,x="g__Blautia",y=l)+
+  theme_pubr()
+
+l <- "REACTOME_ETHANOL_OXIDATION"
+b <- r[order(abs(r[,l]),decreasing = T),]
+scatterplot(a,x="g__Blautia",y=l)+
+  theme_pubr()
+
+l <- "REACTOME_MAPK3_ERK1_ACTIVATION"
+l <- "REACTOME_RAF_INDEPENDENT_MAPK1_3_ACTIVATION"
+b <- r[order(abs(r[,l]),decreasing = T),]
+a$s__Clostridium.bolteae[a$s__Clostridium.bolteae==0] <- min(a$s__Clostridium.bolteae[a$s__Clostridium.bolteae>0])
+a$s__Clostridium.bolteae <- log10(a$s__Clostridium.bolteae)
+scatterplot(a,x="s__Clostridium.bolteae",y=l)+theme_pubr()
+
+
+```
+
+```{r}
+p <- pccAll.uu[,grep("pvalue",colnames(pccAll.uu))]
+r <- pccAll.uu[,grep("rho",colnames(pccAll.uu))]
+colnames(p) <- gsub(" pvalue","",colnames(p))
+colnames(r) <- gsub(" rho","",colnames(r))
+
+p <- p[rownames(lst.prognosis)[lst.prognosis$tumor==1],]
+r <- r[rownames(p),]
+
+for(x in 1:ncol(p)){
+  p[,x] <- p.adjust(p[,x],method = "BH")
+}
+
+
+a <- dat.N[dat.N$Total>=10,]
+l.path <- rownames(a)
+r <- r[,rownames(a)]
+p <- p[,rownames(a)]
+lab <- apply(p,2,function(x) ifelse(x<0.05,"*",""))
+annX <- res[colnames(r),ncol(res),drop=F]
+colnames(annX) <- "T VS. N"
+annColor <- list(
+  `T VS. N` = c(Tumor="red",NAT="blue",NS="gray")
+)
+
+
+ph <- pheatmap::pheatmap(t(r),display_numbers = t(lab),annotation_row = annX,annotation_colors = annColor)
+x <- ph$tree_row$labels[ph$tree_row$order]
+y <- ph$tree_col$labels[ph$tree_col$order]
+```
+
+
+
+
+```{r}
+n <- n[rownames(n) %in% rownames(lst.path),,drop=F]
+n <- na.omit(n)
+n <- cbind(n,lst.path[rownames(n),])
+n <- n[n$n>0,]
+
+# sorting pathway according to the number of associated species 
+n <- n[order(n$n,decreasing = T),]
+n <- n[order(n$Group),]
+
+#n$Categories1[!is.na(n$Categories2)] <- n$Categories2[!is.na(n$Categories2)]
+#a <- union(n$Categories1,NULL)
+#a <- a[!is.na(a)]
+#n$Categories1 <- factor(n$Categories1,levels = a)
+#n <- n[order(n$Categories1),]
+
+
+
+n$x <- factor(n$x,levels = rev(n$x))
+#n$Group <- factor(n$Group,levels = c("Cancer-pathway","CMS-pathway"))
+
+ggplot(n,aes(x=x,y=n,fill=Group))+
+  geom_bar(stat = "identity",width = 0.8)+
+  #facet_grid(~Group,scales = "free",space = "free")+
+  scale_y_continuous(expand = expansion(mult = c(0,0.1)))+
+  scale_fill_brewer(palette = "Set1")+
+  coord_flip()+
+  theme_bw()+
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(color = 1)
+    #axis.text.x = element_text(angle = 270,hjust = 0,vjust = 0.5)
+  )
+ggsave("Fig5.barplot.pathway.pdf",width = 10,height = 3.2)
+```
+
+
