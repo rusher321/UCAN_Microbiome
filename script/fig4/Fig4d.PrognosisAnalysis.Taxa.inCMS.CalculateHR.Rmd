@@ -1,0 +1,271 @@
+---
+title: "HR calculate in UU cohort"
+output:
+  html_document:
+    df_print: paged
+---
+
+## 1. data input
+
+```{r, warning=F}
+# load library
+library(tidyverse)
+library(openxlsx)
+library(vegan)
+library(survival)
+library(survminer)
+library(forestploter)
+```
+ 
+```{r}
+# load data
+load("Data.rd")
+```
+
+
+## 2.data pr-process
+
+### 2.1 pre-process
+```{r}
+# combine taxa profile
+pr.um <- pr.um[,rownames(lst.tumor)]
+pr.uu <- pr.uu[,rownames(lst.tumor)]
+
+# log10
+logTransform <- function(dat){
+  logT <- function(x){
+    x[x==0] <- min(x[x>0])/2
+    (log10(x))
+  }
+  dat.log <- apply(dat,2,logT)
+  dat.log <- as.data.frame(dat.log)
+  rownames(dat.log) <- rownames(dat)
+  as.data.frame(dat.log)
+}
+
+pr.log.uu <- logTransform(pr.uu)
+pr.log.um <- logTransform(pr.um)
+pr.log <- rbind(pr.log.uu,pr.log.um[,colnames(pr.log.uu)])
+```
+
+```{r}
+# metadata transformation
+phe$Age <- scale(phe$Age_At_Diagnosis)
+phe$Gender <- factor(phe$Gender)
+phe$Tumor_Site <- factor(phe$Tumor_Site,levels = c("Right_Colon","Left_Colon","Rectum"),
+                         labels = c("Right","Left_Rectum","Left_Rectum"))
+```
+
+```{r}
+# confounders
+datAdj <- dat.reads[,"Microbiota",drop=F]
+colnames(datAdj) <- "ReadsNumber"
+```
+
+### 2.2 combine data
+```{r}
+colnames(pr.log) <- make.names(colnames(pr.log))
+datx <- cbind(pr.log,phe[rownames(pr.log),],datAdj[rownames(pr.log),,drop=F])
+rownames(datx) <- rownames(pr.log)
+
+# only remain I,II,III stage tumors
+datx <- datx[datx$Tumor_Stage!="IV",]
+datx.raw <- datx
+```
+
+
+
+
+## 3.HR in CMS
+
+### 3.0 functions for HR
+```{r}
+HR <- function(data,x,f,adj=NULL){
+  data <- data[!is.na(data[,x]),,drop=F]
+  lab.x <- paste(x,collapse = "+")
+  formula <- paste0(f,lab.x)
+  if(!is.null(adj)){
+    lab.adj <- paste(adj,collapse = "+")
+    formula <- paste0(formula,"+",lab.adj)
+  }
+  formula <- as.formula(formula)
+  #print(formula)
+  fit <- coxph(formula,data=data)
+  a <- summary(fit)
+  # output
+  out <- cbind(
+    a$coefficients[,c(1,4,5),drop=F],
+    a$conf.int[,c(1,3,4),drop=F]
+  )
+  colnames(out) <- c("coef","z","P","HR","lower.95","upper.95")
+  out <- out %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "x") %>%
+    mutate(
+      HR2 = paste0(round(HR,2)," (",round(lower.95,2)," to ",round(upper.95,2),")")
+    )
+  out[out$x == x,]
+}
+multiHR <- function(dat,f,x,adj){
+  a <- lapply(x,HR,data=dat,f=f,adj=adj)
+  a <- do.call(rbind,a)
+  a$FDR <- p.adjust(a$P,method = "BH")
+  a
+}
+```
+
+
+### 3.1 HR 
+```{r}
+# confounders
+adj <- c("ReadsNumber","Tumor_Site","Tumor_Grade","Tumor_Stage","Age","Treatment_After_Surgery")
+
+# formula
+f1 <- "Surv(OS_5Years_with_censored_update,OS_Status_5Years_with_censored_update)~"
+f2 <- "Surv(RFS_5Years_with_censored,RFS_Status_5Years_with_censored)~"
+
+# only tumor-enriched taxa
+x <- make.names(rownames(lst.tumor))
+```
+
+
+
+#### UU
+
+```{r}
+datx <- datx[grep("UM",rownames(datx),invert = T),]
+res0 <- multiHR(datx,f=f1,x=x,adj = adj)
+res1 <- multiHR(datx[which(datx$CMS_Subtype=="CMS1"),],f1,x=x,adj = adj)
+res2 <- multiHR(datx[which(datx$CMS_Subtype=="CMS2"),],f1,x=x,adj = adj)
+res3 <- multiHR(datx[which(datx$CMS_Subtype=="CMS3"),],f1,x=x,adj = adj)
+res4 <- multiHR(datx[which(datx$CMS_Subtype=="CMS4"),],f1,x=x,adj = adj)
+hrOS.uu <- list(CMS1=res1,CMS2=res2,CMS3=res3,CMS4=res4)
+
+
+res01 <- multiHR(datx,f=f2,x=x,adj = adj)
+res11 <- multiHR(datx[which(datx$CMS_Subtype=="CMS1"),],f2,x=x,adj = adj)
+res21 <- multiHR(datx[which(datx$CMS_Subtype=="CMS2"),],f2,x=x,adj = adj)
+res31 <- multiHR(datx[which(datx$CMS_Subtype=="CMS3"),],f2,x=x,adj = adj)
+res41 <- multiHR(datx[which(datx$CMS_Subtype=="CMS4"),],f2,x=x,adj = adj)
+hrRFS.uu <- list(CMS1=res11,CMS2=res21,CMS3=res31,CMS4=res41)
+
+```
+
+
+
+
+
+
+
+### 3.2 processing
+```{r}
+hrOS.cms <- do.call(rbind,hrOS.uu)
+hrOS.cms$Group <- rep(c("CMS1","CMS2","CMS3","CMS4"),each=length(x))
+hrOS.cms$Group <- factor(hrOS.cms$Group,levels = c("CMS1","CMS2","CMS3","CMS4"))
+
+hrOS.cms[grep("Citro",hrOS.cms$x),]
+
+a <- hrOS.cms[grep("Fusobacterium",hrOS.cms$x),]
+b <- hrOS.cms[grep("Fusobacterium",hrOS.cms$x,invert = T),]
+
+# filter
+b <- b[b$x %in% b$x[b$FDR<0.05],]
+a <- rbind(a,b)
+
+# order in mannual
+p <- a[,c("x","P","Group")] %>%
+  spread(Group,P)
+p <- p[order(p$CMS1<0.05,decreasing = T),]
+p <- p[order(p$CMS3<0.05,decreasing = T),]
+p <- p[order(p$CMS2<0.05,decreasing = T),]
+p <- p[order(p$CMS4<0.05,decreasing = T),]
+
+
+
+## kk2 annotation
+ann <- read.csv("../../1.data.process/kk2.v2/kraken2.db.annotation.csv")
+ann1 <- ann[!duplicated(ann$genus),]
+ann2 <- ann[!duplicated(ann$species),]
+rownames(ann1) <- ann1$genus
+rownames(ann2) <- ann2$species
+ann <- rbind(ann1,ann2)
+ann$p <- gsub("_\\w$","",ann$p)
+ann$p <- gsub("p__","",ann$p)
+rownames(ann) <- gsub(" ",".",rownames(ann))
+
+p$Phylum <- ann[p$x,"p"]
+rownames(p) <- p$x
+```
+
+
+```{r}
+# forest plot
+
+# OS
+dat1 <- hrOS.cms[hrOS.cms$x %in% p$x,]
+dat1$Type <- "OS"
+
+# RFS
+hrRFS.cms <- do.call(rbind,hrRFS.uu)
+hrRFS.cms$Group <- rep(c("CMS1","CMS2","CMS3","CMS4"),each=length(x))
+dat2 <- hrRFS.cms
+dat2$Type <- "RFS"
+dat2 <- dat2[,colnames(dat1)]
+dat2 <- dat2[dat2$x %in% p$x,]
+
+
+# combine data
+dat <- rbind(dat1,dat2)
+dat$lab <- ifelse(dat$P<0.05,"#","")
+dat$lab[dat$FDR < 0.05] <- "*"
+dat$Type <- factor(dat$Type,levels = c("OS","RFS"))
+dat$Group <- factor(dat$Group,levels = paste0("CMS",4:1))
+
+
+# filter species
+
+dat$x <- factor(dat$x,levels = rev(p$x))
+dat$x <- droplevels(dat$x)
+
+dat$phylum <- ann[as.character(dat$x),"p"]
+dat$family <- ann[as.character(dat$x),"f"]
+dat <- dat[dat$family %in% c("f__Fusobacteriaceae","f__Enterobacteriaceae"),]
+dat$x <- droplevels(dat$x)
+dat$lab2 <- round(dat$P,4)
+l <- (dat$family=="f__Enterobacteriaceae" & dat$Group=="CMS2") | (dat$family=="f__Fusobacteriaceae" & dat$Group=="CMS4")
+dat$lab2[!l] <- ""
+
+
+plt <- function(dat){
+  ggplot(dat,aes(x=x,y=HR,color=Group))+
+    geom_point(position = position_dodge(width = 0.4),size=3)+
+    geom_errorbar(aes(ymin=lower.95,ymax=upper.95),width=0.5,
+                  position = position_dodge(width = 0.4))+
+    geom_hline(yintercept = 1,linetype="dashed")+
+    geom_text(aes(label=lab,y=3.7,size=ifelse(lab=="*",10,5),vjust=ifelse(lab=="*",0.75,0.5)))+
+    geom_text(aes(label=lab2,y=3),size=3)+
+    facet_grid(family~Type,scales = "free",space = "free_y")+
+    #facet_wrap(Family~Type,scales = "free_y",nrow = 2,ncol = 2)+
+    coord_flip()+
+    scale_color_manual(values = c(CMS1="#F8766D",CMS2="#7CAE00",CMS3="#00BFC4",CMS4="#C77CFF"),
+                       breaks=paste0("CMS",1:4))+
+    scale_y_continuous(expand = expansion(mult = c(0.1,0.1)))+
+    scale_alpha_continuous(range=c(0.4,1))+
+    scale_size_continuous(range=c(5,10))+
+    theme_bw()+
+    theme(
+      axis.text = element_text(colour = 1,size=14),
+      panel.grid.major.x   = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.text.y = element_text(face = "italic"),
+      strip.text = element_text(size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 14)
+    )
+}
+
+plt(dat)
+ggsave("Fig4d.forest.HR.CMS.taxa.pdf",width = 10,height = 5)
+```
+
+

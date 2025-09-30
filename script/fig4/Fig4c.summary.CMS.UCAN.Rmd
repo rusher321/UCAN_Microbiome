@@ -1,0 +1,204 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-12-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1.data input
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(vegan)
+library(ggpubr)
+library(aplot)
+```
+
+```{r}
+# Maaslin results (tumor vs. nat)
+a         <- readRDS("../Part1/MaAsLin.Tumor_NAT.rds")
+res.tumor <- a$UU
+res.tumor <- res.tumor[res.tumor$FDR < 0.05 & res.tumor$Effectsize > 0, ]
+
+# Maaslin results (HM vs. nHM)
+a       <- readRDS("HM.rds")
+res.hm  <- a$UU
+res.hm$lab <- ifelse(res.hm$FDR < 0.05, "*", "")
+
+# Maaslin results (CMS)
+a       <- readRDS("CMS.rds")
+res.cms <- a$UU
+
+# phenotypes
+phe <- read.csv("../../../../2.SourceData/01.phe/20230727-CRC-SW.20230704-v5.clinical.csv",
+                row.names = 1, header = TRUE)
+phe <- phe[phe$Sample_Center == "UU", ]
+
+## kk2 annotation
+ann  <- read.csv("../../1.data.process/kk2.v2/kraken2.db.annotation.csv")
+ann1 <- ann[!duplicated(ann$genus), ]
+ann2 <- ann[!duplicated(ann$species), ]
+rownames(ann1) <- ann1$genus
+rownames(ann2) <- ann2$species
+ann  <- rbind(ann1, ann2)
+ann$p <- gsub("_\\w$", "", ann$p)
+ann$p <- gsub("p__", "", ann$p)
+```
+
+
+## 2.heatmap (CMS1-enriched)
+```{r}
+## ------------------------------------------------------------------
+## 1. Extract effect-size (estimate) and FDR columns for CMS analysis
+## ------------------------------------------------------------------
+a <- res.cms[, grep("estimate", colnames(res.cms))]   # effect sizes
+b <- res.cms[, grep("FDR",      colnames(res.cms))]   # corresponding FDRs
+colnames(a) <- colnames(b) <- gsub("\\..*", "", colnames(a))
+
+## Keep species with at least one CMS significant (FDR < 0.05)
+b <- b[apply(b, 1, function(x) any(x < 0.05)), ]
+b <- na.omit(b)
+a <- a[rownames(b), ]
+
+
+## ------------------------------------------------------------------
+## 2. Build “CMS1-enriched” group
+## ------------------------------------------------------------------
+g.cms <- data.frame(
+  row.names = rownames(a),
+  CMS1      = ifelse(a$CMS1 < 0, "CMS1-depleted", "CMS1-enriched")
+)
+
+## Append taxonomic annotation
+g.cms$Phylum <- ann[rownames(g.cms), "p"]
+g.cms$taxa   <- rownames(g.cms)
+
+## Retain only CMS1-enriched species
+g.cms <- g.cms[g.cms$CMS1 == "CMS1-enriched", ]
+
+## Set preferred phylum order for plotting
+x <- c("Fusobacteriota", "Campylobacterota", "Firmicutes",
+       "Bacteroidota",   "Actinobacteriota", "Proteobacteria",
+       "Spirochaetota",  "Synergistota")
+g.cms$Phylum <- factor(g.cms$Phylum, levels = x)
+
+## Sort first by species name, then by phylum
+g.cms <- g.cms[order(g.cms$taxa), ]
+g.cms <- g.cms[order(g.cms$Phylum), ]
+
+## Rename first column for clarity
+colnames(g.cms)[1] <- "Enrich"
+
+## Merge effect sizes back
+g.cms <- cbind(g.cms, a[rownames(g.cms), ])
+```
+
+```{r}
+a <- g.cms %>%
+  gather(CMS,estimate,-Enrich,-taxa,-Phylum)
+a$taxa <- factor(a$taxa,levels = rev(g.cms$taxa))
+a$lab <- ifelse(a$CMS=="CMS1","*","")
+
+p1 <- 
+ggplot(a,aes(CMS,taxa,fill=estimate))+
+  geom_tile()+
+  geom_text(aes(label=lab),hjust=0.75,size=5)+
+  scale_fill_gradient2(low = "blue",high = "#f2b632",mid = "white",midpoint = 0)+
+  scale_y_discrete(expand = expansion(mult = c(0,0)))+
+  scale_x_discrete(expand = expansion(mult = c(0,0)))+
+  theme_bw()+
+  theme(
+    axis.title = element_text(color=1,size=14),
+    axis.text = element_text(color=1,size=14),
+    axis.text.x = element_text(angle = 270,vjust=0.5,hjust = 0),
+    legend.title = element_text(size = 14,color=1),
+    legend.text = element_text(size = 14,color=1)
+  )
+p1
+```
+
+
+```{r}
+# plot for phylum
+g.cms$taxa <- factor(g.cms$taxa,levels = rev(g.cms$taxa))
+g.cms$x <- "Phylum"
+
+p2 <- 
+ggplot(g.cms,aes(x,taxa,fill=Phylum))+
+  geom_tile()+
+  scale_fill_brewer(palette = "Set2")+
+  scale_y_discrete(expand = expansion(mult = c(0,0)))+
+  scale_x_discrete(expand = expansion(mult = c(0,0)))+
+  theme_bw()+
+  theme(
+    axis.title = element_text(color=1,size=14),
+    axis.text = element_text(color=1,size=14),
+    axis.text.x = element_text(angle = 270,vjust=0.5,hjust = 0),
+    legend.title = element_text(size = 14,color=1),
+    legend.text = element_text(size = 14,color=1)
+  )
+p2
+```
+
+
+
+
+
+```{r}
+# hyper
+g.hm <- data.frame(
+  row.names = row.names(res.hm),
+  Groups = ifelse(res.hm$estimate>0,"HM",'nHM'),
+  fill = res.hm$estimate,
+  FDR = res.hm$FDR
+)
+g.hm$Groups[g.hm$FDR>=0.05] <- "ns"
+g.hm <- g.hm[rownames(g.cms),,drop=F]
+g.hm$taxa <- factor(g.cms$taxa,levels = levels(g.cms$taxa))
+g.hm$x <- "HM vs. nHM"
+g.hm$Groups <- factor(g.hm$Groups,levels = c("HM","nHM","ns"))
+g.hm$lab <- ifelse(g.hm$Groups!="ns","*","")
+
+p4 = 
+ggplot(g.hm,aes(x,taxa,fill=fill))+
+  geom_tile(color="white")+
+  geom_text(aes(label=lab),size=5)+
+  #scale_fill_gradient2(high = "#b5547d",low = "#4a5ca5",mid = "white",midpoint = 0,
+  #                     limits=c(-0.3,2.6),breaks=c(-0.2,-0.1,))+
+  scale_fill_gradientn(colours = c("#4a9cb1", "white", "#cf5b51"),
+                       values = scales::rescale(c(-2.5,-2,-1, 0, 1,2, 2.5)),
+                       guide = "colorbar", limits=c(-2.5,2.5))+
+  scale_y_discrete(expand = expansion(mult = c(0,0)))+
+  scale_x_discrete(expand = expansion(mult = c(0,0)))+
+  theme_bw()+
+  theme(
+    axis.title = element_text(color=1,size=14),
+    axis.text = element_text(color=1,size=14),
+    axis.text.x = element_text(angle = 270,vjust=0.5,hjust = 0),
+    legend.title = element_text(size = 14,color=1),
+    legend.text = element_text(size = 14,color=1)
+  )
+p4
+
+
+
+library(aplot)
+addTheme <- theme(
+  axis.text.y = element_blank(),
+  axis.ticks.y = element_blank(),
+  axis.title.y = element_blank()
+)
+p1 <- p1 + addTheme
+p4 <- p4 + addTheme
+p1  %>% 
+  insert_left(p4,width = 0.2) %>%
+  insert_left(p2,width = 0.2) 
+
+ggsave("Fig4c.pdf",width = 9,height = 12)
+
+
+```
+

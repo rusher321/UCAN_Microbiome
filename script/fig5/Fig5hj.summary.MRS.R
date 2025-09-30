@@ -25,14 +25,21 @@ cindexFun2 <- function(dat,x,f){
 }
 
 
-mrs <- readRDS("MRS.UCAN_ICAM.WGS.rds")
+mrs <- readRDS("MRS.UCAN_ICAM.WGS.withoutIV.rds")
+mrs <- lapply(mrs,function(x){
+  x$Group = ifelse(x$Index >= median(x$Index),"High MRS","Low MRS")
+  x$Group = factor(x$Group,levels = c("Low MRS","High MRS"))
+  rownames(x) <- gsub(".*-(U.*)-.*","\\1",rownames(x))
+  x
+})
+
 mrs$UU.Tumor.WGS <- mrs$UU.Tumor.WGS[rownames(mrs$UU.NAT.WGS),,drop=F]
 mrs$UM.Tumor.WGS <- mrs$UM.Tumor.WGS[rownames(mrs$UM.NAT.WGS),,drop=F]
 
 
 # data
-phe.ucan <- read.csv("../../../2.SourceData/01.phe/20230727-CRC-SW.20230704-v5.clinical.csv",row.names = 1)
-phe.icam <- readRDS("../../../2.SourceData/00.SourceData/phenotype.ICAM.rds")
+phe.ucan <- read.csv("../../../../2.SourceData/01.phe/20230727-CRC-SW.20230704-v5.clinical.csv",row.names = 1)
+phe.icam <- readRDS("../../../../2.SourceData/00.SourceData/phenotype.ICAM.rds")
 phe.ucan$Tumor_Site <- ifelse(phe.ucan$Tumor_Site=="Right_Colon","Right","Left")
 phe.ucan$Age <- phe.ucan$Age_At_Diagnosis
 phe.icam$AJCC_path_stage <- as.character(phe.icam$AJCC_path_stage)
@@ -61,6 +68,12 @@ d2 <- cbind(dat.um,adj.um[rownames(dat.um),],mrs$UM.Tumor.WGS[rownames(dat.um),,
 d3 <- cbind(dat.icam,adj.icam[rownames(dat.icam),],mrs$ICAM.WGS[rownames(dat.icam),,drop=F])
 d4 <- cbind(dat.uu,adj.uu[rownames(dat.uu),],mrs$UU.NAT.WGS[rownames(dat.uu),,drop=F])
 d5 <- cbind(dat.um,adj.um[rownames(dat.um),],mrs$UM.NAT.WGS[rownames(dat.um),,drop=F])
+
+d1 <- d1[d1$Tumor_Stage!="IV",]
+d2 <- d2[d2$Tumor_Stage!="IV",]
+d3 <- d3[d3$Tumor_Stage!="4",]
+d4 <- d4[d4$Tumor_Stage!="IV",]
+d5 <- d5[d5$Tumor_Stage!="IV",]
 
 
 Cindex.addon <- function(d1,d2,d3,d4,d5,x){
@@ -110,6 +123,7 @@ Cindex.addon <- function(d1,d2,d3,d4,d5,x){
     coord_flip()+
     facet_wrap(g~.,scales = "free",nrow = 6,strip.position="left")+
     geom_line(aes(group=x),arrow=arrow(ends = "first",length = unit(0.1,"inches")))+
+    geom_text(aes(label=Cindex))+
     scale_color_manual(values = c("#16A085","#E74C3C"))+
     #scale_y_continuous(limits = c(0.63,0.88))+
     theme_bw()+
@@ -131,32 +145,43 @@ res.all <- Cindex.addon(
   x = x
 )+labs(title = "All")
 
-res.left <- Cindex.addon(
-  d1[d1$Tumor_Site=="Left",],
-  d2[d2$Tumor_Site=="Left",],
-  d3[d3$Tumor_Site=="Left",],
-  d4[d4$Tumor_Site=="Left",],
-  d5[d5$Tumor_Site=="Left",],
-  x = x[x!="Tumor_Site"]
-)+labs(title = "Left")
 
 
-res.right <- Cindex.addon(
-  d1[d1$Tumor_Site=="Right",],
-  d2[d2$Tumor_Site=="Right",],
-  d3[d3$Tumor_Site=="Right",],
-  d4[d4$Tumor_Site=="Right",],
-  d5[d5$Tumor_Site=="Right",],
-  x = x[x!="Tumor_Site"]
-)+labs(title = "Right")
-
-
-ggarrange(res.all,res.left,res.right,nrow = 1,ncol = 3,align = "hv")
-
-ggsave("point.Cindex.pdf",width = 6,height = 7)
+#ggarrange(res.all,res.left,res.right,nrow = 1,ncol = 3,align = "hv")
+res.all
+ggsave("Fig5j.point.Cindex.pdf",width = 5,height = 6)
 
 
 
+# fig5h
+a <- mrs$UU.Tumor.WGS
+b <- mrs$UU.NAT.WGS
+dat <- data.frame(
+  Tumor = a[rownames(b),1],
+  NAT = b[,1]
+)
+
+scatterplot = function (dat, x, y, group = NULL) {
+  dat <- dat[!is.na(dat[, x]), , drop = F]
+  s0 <- cor.test(dat[, x], dat[, y], method = "s")
+  lab <- paste0("rho=",round(s0$estimate,  3), "; p=",s0$p.value)
+  p <- ggplot(dat, aes_string(x, y)) + 
+    geom_point(shape=21,size = 5, alpha = 0.8,fill="gray",color="white") + 
+    geom_smooth(method = MASS::rlm, se = F, size = 1) + 
+    annotate("text", x = -Inf,  y = Inf, vjust = 1.2, hjust = 0, label = lab, size = 4) + 
+    theme_bw()+
+    theme(
+      axis.text = element_text(color = 1,size=14),
+      axis.title = element_text(size = 14,colour = 1),
+      panel.grid = element_blank(),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 14)
+    )
+  p
+}
+scatterplot(dat,x="Tumor",y="NAT")
+
+ggsave("Fig5h.pdf",width = 3,height = 3)
 
 
 

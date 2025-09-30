@@ -1,0 +1,178 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-12-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1.data loading
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(vegan)
+library(metastat) # devtools::install_github("zhunshi/metastat")
+library(ppcor)
+```
+
+```{r}
+# MaAsLin2 results -----------------------------------------------------------
+# Tumour vs NAT (UU cohort)
+l1 <- readRDS("../Part1/MaAsLin.Tumor_NAT.rds")$UU
+
+# Hyper-mutated vs non-hyper-mutated (UU cohort)
+l2 <- readRDS("HM.rds")$UU
+l2 <- l2[rownames(l1), ]                # same taxa order
+
+# Microbiome profiles (genus + species) --------------------------------------
+pr.ucan  <- readRDS("../../1.data.process/kk2.v2/Data.UCAN.rmHOST.rds")$RA$WGS
+pr.icam  <- readRDS("../../1.data.process/kk2.v2/Data.ICAM.rmHOST.rds")$RA$WGS
+
+# Phenotypes -----------------------------------------------------------------
+phe.ucan <- readRDS("../../1.data.process/kk2.v2/Data.UCAN.rmHOST.rds")$phe
+phe.icam <- readRDS("../../1.data.process/kk2.v2/Data.ICAM.rmHOST.rds")$phe
+
+# Kraken2-mapped reads (used as covariate) -----------------------------------
+dat.reads <- read.csv("../../1.data.process/kk2.v2/reads.summary.csv",
+                      row.names = 1, header = TRUE)
+
+# Somatic mutation matrices --------------------------------------------------
+dna <- read.xlsx("../../../../2.SourceData/03.Mutation/CRC-SW.Ensemble.1063_DNBSEQ.20210706.hypermutated.xlsx",
+                 sheet = 3, rowNames = TRUE)[, "SNP", drop = FALSE]
+
+sv  <- read.table("../../../../2.SourceData/03.Mutation/CRC-SW.BRASS.1063_DNBSEQ.20210719.annot.somatic.bedpe.svclass_count.tsv",
+                  row.names = 1, header = TRUE)
+
+cnv <- read.table("../../../../2.SourceData/03.Mutation/CRC-SW.FACETS.facets-suite.1063_DNBSEQ.20210706.hisens.seg_detail.cnvtype_count-3.tsv",
+                  row.names = 1, header = TRUE)
+
+```
+
+## 2.data process
+```{r}
+phe.ucan$Group <- factor(phe.ucan$Hyper_Mutated_Status,levels = c("nonhypermutated","hypermutated"),labels = c("nHM","HM"))
+phe.ucan$Location <- factor(phe.ucan$Tumor_Site,levels = c("Right_Colon","Left_Colon","Rectum"),
+                       labels = c("Right","Left","Left"))
+adj.ucan <- phe.ucan[,c("Location","Gender","Age_At_Diagnosis")]
+rownames(adj.ucan) <- phe.ucan$Tumor_ID
+adj.ucan <- cbind(adj.ucan,dat.reads[rownames(adj.ucan),9,drop=F])
+colnames(adj.ucan)[4] <- "Reads"
+adj.ucan$Location <- as.numeric(adj.ucan$Location)
+adj.ucan$Gender <- as.numeric(factor(adj.ucan$Gender))
+
+adj.icam <- phe.icam[rownames(pr.icam),c("Location","Gender","Age")]
+adj.icam <- cbind(adj.icam,dat.reads[rownames(adj.icam),9,drop=F])
+colnames(adj.icam) <- colnames(adj.ucan)
+adj.icam$Location <- as.numeric(factor(adj.icam$Location))
+adj.icam$Gender <- as.numeric(factor(adj.icam$Gender))
+
+# combine mutation data
+all(rownames(dna) %in% rownames(cnv))
+all(rownames(dna) %in% rownames(sv))
+dat.mut <- cbind(dna,cnv[rownames(dna),],sv[rownames(dna),])
+dat.mut <- dat.mut[rownames(dat.mut) %in% c(rownames(adj.ucan)),]
+dat.mut <- dat.mut[,c(1),drop=F]
+colnames(dat.mut) <- c("SNP")
+dat.mut.ucan <- dat.mut
+```
+
+```{r}
+dat.mut.icam <- phe.icam[rownames(adj.icam),"total_mutational_burden_per_Mb",drop=F]
+colnames(dat.mut.icam) <- "SNP"
+```
+
+
+
+```{r}
+# profiles
+pr.ucan <- pr.ucan[grep("-T",rownames(pr.ucan)),]
+pr.uu <- pr.ucan[grep("UM",rownames(pr.ucan),invert = T),]
+pr.um <- pr.ucan[grep("UM",rownames(pr.ucan),invert = F),]
+```
+
+
+## 4.scc between hyper-related genus and mutations
+
+
+
+```{r,warning=F}
+sccFun <- function(pr,mut,adj){
+  pr.g <- pr[,grep("g__",colnames(pr))]
+  pr.s <- pr[,grep("s__",colnames(pr))]
+  scc.g <- pcc_between(pr.g,mut,adj)
+  scc.s <- pcc_between(pr.s,mut,adj)
+  scc <- rbind(scc.g,scc.s)
+}
+
+scc.uu <- sccFun(pr.uu,dat.mut.ucan,adj.ucan)
+scc.um <- sccFun(pr.um,dat.mut.ucan,adj.ucan)
+scc.icam <- sccFun(pr.icam,dat.mut.icam,adj.icam)
+
+a <- rownames(l1)[l1$FDR<0.05 & l1$Effectsize>0 & l2$FDR<0.05 & l2$estimate>0]
+b <- rownames(l1)[l1$FDR<0.05 & l1$Effectsize>0 & l2$FDR<0.05 & l2$estimate<0]
+l <- c(a,b)
+dat.uu <- scc.uu[l,]
+dat.um <- scc.um[l,]
+dat.icam <- scc.icam[l,]
+```
+
+```{r,warning=F}
+fun1 <- function(d){
+  p <- d[,grep("pval",colnames(d)),drop=F]
+  f <- d[,grep("FDR",colnames(d)),drop=F]
+  r <- d[,grep("rho",colnames(d)),drop=F]
+  colnames(p) <- colnames(r) <- colnames(f) <- gsub(" rho","",colnames(r))
+  p <- p %>% rownames_to_column(var = "x") %>% gather(Type,pval,-x)
+  f <- f %>% rownames_to_column(var = "x") %>% gather(Type,FDR,-x)
+  r <- r %>% rownames_to_column(var = "x") %>% gather(Type,rho,-x)
+  dat <- full_join(p,f,by=c("x","Type")) %>%
+    full_join(r,by=c("x","Type")) %>%
+    mutate(
+      lab = ifelse(pval>=0.05,"","#"),
+      lab = replace(lab,FDR<0.05,"*")
+    )
+}
+a <- fun1(dat.uu)
+b <- fun1(dat.um)
+c <- fun1(dat.icam)
+a$Cohort <- "UU"
+b$Cohort <- "UM"
+c$Cohort <- "AC-ICAM"
+d <- rbind(a,b,c)
+d$Cohort <- factor(d$Cohort,levels = c("UU","UM","AC-ICAM"))
+d$Type <- factor(d$Type,levels = colnames(dat.mut.ucan))
+d$x <- factor(d$x,levels = rev(l),)
+d$g2 <- ifelse(d$x %in% l[1:26],"HM","nHM")
+
+a <- read.csv("TMP.order.csv",row.names = 1)
+d$x <- factor(d$x,levels = rev(rownames(a)),labels = rev(a$rename))
+
+ggplot(d,aes(Type,x,fill=rho))+
+  geom_tile()+
+  facet_grid(g2~Cohort,scales = "free_y",space = "free_y")+
+  geom_text(aes(label=lab,size=ifelse(lab=="*",5,4)))+
+  scale_size_continuous(range=c(3,4))+
+  xlab("")+ylab("")+
+  scale_fill_gradient2(low = "#2A9D8F",mid = "white",high = "#E87E04",midpoint = 0)+
+  scale_x_discrete(expand = expansion(mult = c(0,0)))+
+  theme_bw()+
+  theme(
+    panel.grid = element_blank(),
+    axis.title = element_text(size = 14,color=1),
+    axis.text = element_text(size = 13,color=1),
+    axis.text.x = element_text(angle = 90,hjust = 1,vjust = 0.5),
+    axis.ticks = element_blank(),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 13),
+    strip.text = element_text(size = 13),
+    strip.text.y = element_blank(),
+    strip.background = element_blank()
+  )
+ggsave("Fig3b.heatmap.mutation.pdf",width = 8,height = 7)
+```
+
+
+
+

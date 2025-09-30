@@ -1,0 +1,177 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-03-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1.data input
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(vegan)
+library(metastat)
+library(pheatmap)
+library(ppcor)
+library(data.table)
+library(ggpubr)
+```
+
+
+```{r}
+dat <- readRDS("LOH.rds")
+dat.uu <- dat$UU
+dat.um <- dat$UM
+
+dat.uu <- dat.uu[rownames(dat.um),]
+```
+
+```{r}
+l1 <- readRDS("../Part1/MaAsLin.Tumor_NAT.rds")
+l1 <- l1$UU
+# HM vs. nHM
+l2 <- readRDS("HM.rds")
+l2 <- l2$UU
+l2 <- l2[rownames(l1),]
+a <- rownames(l1)[l1$FDR<0.05 & l1$Effectsize>0 & l2$FDR<0.05 & l2$estimate>0]
+b <- rownames(l1)[l1$FDR<0.05 & l1$Effectsize>0 & l2$FDR<0.05 & l2$estimate<0]
+l <- c(a,b)
+
+dat.uu <- dat.uu[l,]
+dat.um <- dat.um[l,]
+
+# 读取gene list
+geneList1 <- read.xlsx("../../../../2.SourceData/03.Mutation/DR pathway gene.xlsx",rowNames = T)
+rownames(geneList1) <- geneList1$Genes
+geneList2 <- read.xlsx("../../../../2.SourceData/03.Mutation/96 driver from cong.xlsx")
+geneList2 <- geneList2[,c("gene_name","pathway.f2")]
+colnames(geneList2) <- c("Genes","Pathway")
+rownames(geneList2) <- geneList2$Genes
+```
+
+
+```{r}
+# Association selection
+# P<0.05
+p <- dat.uu[,grep("Pval",colnames(dat.uu))]
+colnames(p) <- gsub("\\.Pval","",colnames(a))
+# FDR<0.05
+f <- dat.uu[,grep("FDR",colnames(dat.uu))]
+colnames(f) <- gsub("\\.FDR","",colnames(f))
+
+stat.uu <- data.frame(
+  n_Pval = apply(p,2,function(x) sum(x<0.05)),
+  n_FDR = apply(f,2,function(x) sum(x<0.05))
+)
+
+stat.uu <- stat.uu[rownames(stat.uu) %in% c(rownames(geneList1),rownames(geneList2)),]
+stat.uu$Group <- ifelse(rownames(stat.uu) %in% rownames(geneList2),"Drivers","DDRs")
+stat.uu$Group <- factor(stat.uu$Group,levels = c("Drivers","DDRs"))
+
+# 排序
+stat.uu <- stat.uu[order(stat.uu$n_Pval,decreasing = T),]
+stat.uu <- stat.uu[order(stat.uu$n_FDR,decreasing = T),]
+stat.uu <- stat.uu[stat.uu$n_Pval>0,]
+stat.uu <- stat.uu[order(stat.uu$Group,decreasing = T),]
+```
+
+
+## 5.heatmap
+### Figure
+
+```{r}
+mytheme <- theme(
+  axis.title = element_text(size = 14,color=1),
+  axis.text = element_text(size = 13,color = 1),
+  legend.title = element_text(size = 14),
+  legend.text = element_text(size = 13),
+  panel.grid = element_blank(),
+  strip.text = element_text(size = 13)
+)
+plt3 <- function(d,ann_col,sigLabel="FDR"){
+  a.p <- d[,grep("Pval",colnames(d))]
+  a.f <- d[,grep("FDR",colnames(d))]
+  a.r <- d[,grep("estimate",colnames(d))]
+  colnames(a.p) <- colnames(a.f) <- colnames(a.r) <- gsub("\\.Pval","",colnames(a.p))
+  print(head(a.f))
+  # number of significantly associated taxa
+  if(sigLabel=="FDR"){
+    dat.sig <- a.f 
+  }else{
+    dat.sig <- a.p
+  }
+  
+  nTaxa <- data.frame(nTaxa=apply(dat.sig,2,function(x) sum(x<0.05)))
+  print(head(nTaxa))
+  ann_col$n <- nTaxa[rownames(ann_col),"nTaxa"]
+  
+  print(head(ann_col))
+  
+  # ranking by genes
+  ann_col$Genes <- factor(rownames(ann_col),levels = rownames(ann_col))
+  
+  p1 <- ggplot(ann_col,aes(x=Genes,y=n))+
+    geom_point(size=1)+
+    geom_line(group=1)+
+    facet_grid(~Group,scales = "free",space = "free")+
+    theme_bw()+mytheme
+  print(p1)
+  
+  order.gene <- rownames(ann_col)
+  order.taxa <- rownames(a.p)
+  a.p <- a.p[rownames(a.p),order.gene]
+  a.f <- a.f[rownames(a.p),order.gene]
+  a.r <- a.r[rownames(a.p),order.gene]
+  
+  a.p <- a.p %>% rownames_to_column(var = "taxa") %>% gather(Genes,pval,-taxa)
+  a.f <- a.f %>% rownames_to_column(var = "taxa") %>% gather(Genes,FDR,-taxa)
+  a.r <- a.r %>% rownames_to_column(var = "taxa") %>% gather(Genes,rho,-taxa)
+  
+  dat <- full_join(a.p,a.f,by=c("Genes","taxa")) %>% full_join(a.r,by=c("Genes","taxa"))
+  dat$taxa <- factor(dat$taxa,levels = rev(order.taxa))
+  dat$Genes <- factor(dat$Genes,levels = order.gene)
+  dat$Group <- ann_col[as.character(dat$Genes),"Group"]
+  dat$lab <- ifelse(dat$FDR<0.05,"*","")
+  dat$y <- NA
+  dat$y[dat$pval>0.05] <- 0
+  dat$y[dat$pval<0.05] <- 1
+  dat$y[dat$pval<0.01] <- 2
+  dat$y[dat$pval<0.001] <- 3
+  dat$y[dat$pval<0.0001] <- 4
+  dat$y <- dat$y * sign(dat$rho)
+  dat$col <- factor(as.character(dat$y),levels = as.character(seq(4,-4,-1)))
+  fillColor <- colorRampPalette(colors = c("#2767c7", "white", "firebrick3"))(9)
+  fillColor <- rev(fillColor)
+  names(fillColor) <- rev(as.character(seq(-4,4,1)))
+  p2 <- 
+  ggplot(dat,aes(x=Genes,y=taxa,fill=col))+
+    geom_tile()+
+    facet_grid(~Group,scales = "free",space = "free")+
+    geom_text(aes(label=lab),size=5,vjust=0.75)+
+    scale_fill_manual(values = fillColor)+
+    theme_bw()+mytheme
+
+  p <- ggarrange(
+    p1+theme(axis.text.x = element_blank()),
+    p2+theme(legend.position = "",axis.text.x = element_text(angle = 270,vjust = 1,hjust=0)),
+    heights = c(1.8,4),align = "hv",nrow = 2,ncol = 1)
+  
+  return(list(plot=p,data=p2$data))
+}
+p1 <- plt3(d=dat.uu,ann_col = stat.uu,sigLabel="FDR")
+p1$plot
+p2 <- plt3(dat.um,ann_col = stat.uu,sigLabel="Pval")
+p2$plot
+
+ggarrange(p1$plot,p2$plot,nrow = 2,ncol = 1,align = "hv")
+```
+
+
+```{r}
+ggsave("FigS3cd.heatmap.pdf",width = 28,height = 22)
+
+```
+

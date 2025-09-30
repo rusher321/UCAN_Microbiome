@@ -1,0 +1,332 @@
+---
+title: "Determination of prognostic taxa"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+## 1. load data
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(vegan)
+library(survival)
+library(survminer)
+library(forestploter)
+library(caret)
+```
+
+```{r}
+# 输入数据
+# profile
+dataUCAN <- readRDS("../../1.data.process/kk2.v2/Data.UCAN.rmHOST.rds")
+pr.ucan <- dataUCAN$RA$WGS
+dataICAM <- readRDS("../../1.data.process/kk2.v2/Data.ICAM.rmHOST.rds")
+pr.icam <- dataICAM$RA$WGS
+
+dat.reads <- read.csv("../../1.data.process/kk2.v2/reads.summary.csv",row.names = 1,header = T)
+dat.reads <- dat.reads[dat.reads$cohort %in% c("UU","UM","AC-ICAM"),]
+dat.reads <- dat.reads[dat.reads$sampleType!="Blood",]
+# reads > 10000
+#dat.reads <- dat.reads[dat.reads$Microbiota>10000,]
+
+pr.uu <- pr.ucan[rownames(dat.reads)[dat.reads$cohort=="UU"],,drop=F]
+pr.um <- pr.ucan[rownames(dat.reads)[dat.reads$cohort=="UM"],,drop=F]
+pr.icam <- pr.icam[rownames(dat.reads)[dat.reads$cohort=="AC-ICAM"],,drop=F]
+
+phe.ucan <- dataUCAN$phe
+phe.ucan <- phe.ucan[rownames(phe.ucan) %in% dat.reads$patientID,]
+
+# 去除4期样本
+SID.rmStage4 <- rownames(phe.ucan)[phe.ucan$Tumor_Stage!="IV"]
+
+```
+
+
+```{r}
+a <- readRDS("../../1.data.process/kk2/Data.UCAN.rmHOST.rds")
+a <- a$RA$WGS[rownames(pr.uu),]
+cor.test(a$`s__Akkermansia muciniphila`,pr.uu$`s__Akkermansia muciniphila`,method = "s")
+pr.uu$`s__Akkermansia muciniphila` <- a[rownames(pr.uu),"s__Akkermansia muciniphila"]
+pr.uu$g__Akkermansia <- a[rownames(pr.uu),"g__Akkermansia"]
+
+```
+
+
+```{r}
+# 样本过滤和taxa过滤
+filterPer = function (x, row, percent, include = T) 
+{
+  if (include) {
+    index <- apply(x, row, function(x) {
+      (sum(x != 0)/length(x)) > percent
+    })
+  }
+  else {
+    index <- apply(x, row, function(x) {
+      (sum(x != 0)/length(x)) < percent
+    })
+  }
+  if (row == 1) {
+    out <- x[index, ]
+  }
+  else {
+    out <- x[, index]
+  }
+  return(out)
+}
+
+renorm <- function(x,occ=0.2){x <- filterPer(x, 2, occ);x/rowSums(x)}
+
+# main functions
+dataprocessing <- function(pr){
+  a <- pr[,grep("g__",colnames(pr))]
+  a <- renorm(a,occ = 0.5)
+  b <- pr[,grep("s__",colnames(pr))]
+  b <- renorm(b)
+  pr <- cbind(a,b)
+  pr.t <- pr[grep("-T",rownames(pr)),]
+  pr.n <- pr[grep("-N",rownames(pr)),]
+  rownames(pr.t) <- gsub(".*-(U.*)-.*","\\1",rownames(pr.t))
+  rownames(pr.n) <- gsub(".*-(U.*)-.*","\\1",rownames(pr.n))
+  list(Tumor=pr.t,NAT=pr.n)
+}
+
+a <- dataprocessing(pr.uu)
+pr.uu.t <- a$Tumor
+pr.uu.n <- a$NAT
+
+a <- dataprocessing(pr.um)
+pr.um.t <- a$Tumor
+pr.um.n <- a$NAT
+
+
+# remove stage IV
+pr.uu.t <- pr.uu.t[rownames(pr.uu.t) %in% SID.rmStage4,]
+pr.uu.n <- pr.uu.n[rownames(pr.uu.n) %in% SID.rmStage4,]
+pr.um.t <- pr.um.t[rownames(pr.um.t) %in% SID.rmStage4,]
+pr.um.n <- pr.um.n[rownames(pr.um.n) %in% SID.rmStage4,]
+
+
+
+
+# ICAM-WGS
+# remove stage IV
+phe.icam <- readRDS("../../../../2.SourceData/00.SourceData/phenotype.ICAM.rds")
+phe.icam <- phe.icam[rownames(pr.icam),]
+pr.icam <- pr.icam[phe.icam$AJCC_path_stage!=4,]
+phe.icam$Tumor_Stage <- factor(phe.icam$AJCC_path_stage)
+phe.icam$Tumor_Site <- phe.icam$Location
+```
+
+
+
+```{r}
+# load functions for Hazards  models
+source("prognostic_fun.R")
+```
+
+
+```{r}
+
+```
+
+
+
+## 2.data process
+
+### phenotypes
+```{r}
+# factors
+phe.ucan$Tumor_Site <- factor(phe.ucan$Tumor_Site,levels = c("Rectum","Left_Colon","Right_Colon"),labels = c("Left/Rectum","Left/Rectum","Right"))
+phe.ucan$Tumor_Grade <- factor(phe.ucan$Tumor_Grade,levels = c("Low-Grade","High-Grade"))
+
+phe.uu.t <- phe.ucan[rownames(pr.uu.t),]
+phe.uu.n <- phe.ucan[rownames(pr.uu.n),]
+phe.um.t <- phe.ucan[rownames(pr.um.t),]
+phe.um.n <- phe.ucan[rownames(pr.um.n),]
+
+phe.icam <- phe.icam[rownames(pr.icam),]
+
+dat.reads.t <- dat.reads[dat.reads$sampleType=="Tumor",]
+dat.reads.n <- dat.reads[dat.reads$sampleType=="NAT",]
+rownames(dat.reads.t) <- dat.reads.t$patientID
+rownames(dat.reads.n) <- dat.reads.n$patientID
+
+phe.uu.t$Reads <- dat.reads.t[rownames(phe.uu.t),"Microbiota"]
+phe.uu.n$Reads <- dat.reads.n[rownames(phe.uu.n),"Microbiota"]
+phe.um.t$Reads <- dat.reads.t[rownames(phe.um.t),"Microbiota"]
+phe.um.n$Reads <- dat.reads.n[rownames(phe.um.n),"Microbiota"]
+phe.icam$Reads <- dat.reads.t[rownames(phe.icam),"Microbiota"]
+```
+
+### taxa
+```{r}
+### to consistent genus 
+inter_taxa <- intersect(colnames(pr.uu.t), colnames(pr.um.t))
+pr.uu.t <- pr.uu.t[,inter_taxa]
+pr.um.t <- pr.um.t[,inter_taxa]
+pr.uu.n <- pr.uu.n[,inter_taxa]
+pr.um.n <- pr.um.n[,inter_taxa]
+pr.icam <- pr.icam[,inter_taxa]
+
+pr.raw <- list(
+  UU.t = pr.uu.t,
+  UU.n = pr.uu.n,
+  UM.t = pr.um.t,
+  UM.n = pr.um.n,
+  pr.icam.t = pr.icam
+)
+
+# log-transformation
+LogT <- function(x){x[x==0] <- min(x[x>0])/2;x=scale(log10(x));(x)}
+
+all(rownames(pr.uu.t)==rownames(phe.uu.t))
+all(rownames(pr.um.t)==rownames(phe.um.t))
+all(rownames(pr.uu.n)==rownames(phe.uu.n))
+all(rownames(pr.um.n)==rownames(phe.um.n))
+all(rownames(pr.icam)==rownames(phe.icam))
+
+
+
+pr.uu.t <- apply(pr.uu.t,2,LogT)
+pr.uu.n <- apply(pr.uu.n,2,LogT)
+pr.um.t <- apply(pr.um.t,2,LogT)
+pr.um.n <- apply(pr.um.n,2,LogT)
+pr.icam <- apply(pr.icam,2,LogT)
+
+rownames(pr.uu.t) <- rownames(phe.uu.t)
+rownames(pr.um.t) <- rownames(phe.um.t)
+rownames(pr.uu.n) <- rownames(phe.uu.n)
+rownames(pr.um.n) <- rownames(phe.um.n)
+rownames(pr.icam) <- rownames(phe.icam)
+
+```
+
+### combine data
+```{r}
+dat.uu.t <- cbind(phe.uu.t,pr.uu.t)
+dat.uu.n <- cbind(phe.uu.n,pr.uu.n)
+dat.um.t <- cbind(phe.um.t,pr.um.t)
+dat.um.n <- cbind(phe.um.n,pr.um.n)
+dat.icam <- cbind(phe.icam,pr.icam)
+```
+
+
+## 3.HR calculate
+
+```{r}
+adj <- c( "Age_At_Diagnosis", "Tumor_Stage", "Tumor_Grade", "Tumor_Site", "Treatment_After_Surgery","Reads")
+x <- make.names(colnames(pr.uu.t))
+colnames(dat.uu.t) <- make.names(colnames(dat.uu.t))
+colnames(dat.uu.n) <- make.names(colnames(dat.uu.n))
+colnames(dat.um.t) <- make.names(colnames(dat.um.t))
+colnames(dat.um.n) <- make.names(colnames(dat.um.n))
+colnames(dat.icam) <- make.names(colnames(dat.icam))
+
+# tumor (no IV)
+r.uu.t <- multiHR(dat.uu.t, x=x,time="OS_5Years_with_censored_update",censor = "OS_Status_5Years_with_censored_update",adj=adj)
+r.uu.n <- multiHR(dat.uu.n, x=x,time="OS_5Years_with_censored_update",censor = "OS_Status_5Years_with_censored_update",adj=adj)
+
+r.um.t <- multiHR(dat.um.t, x=x,time="OS_5Years_with_censored_update",censor = "OS_Status_5Years_with_censored_update",adj=adj)
+r.um.n <- multiHR(dat.um.n, x=x,time="OS_5Years_with_censored_update",censor = "OS_Status_5Years_with_censored_update",adj=adj)
+
+adj <- c("Reads","Age","Tumor_Stage","Tumor_Site")
+r.icam.t <- multiHR(dat.icam, x=x,time="OS_time",censor = "OS_status",adj=adj)
+
+
+
+# RFS
+adj <- c( "Age_At_Diagnosis", "Tumor_Stage", "Tumor_Grade", "Tumor_Site", "Treatment_After_Surgery","Reads")
+r.uu.t2 <- multiHR(dat.uu.t, x=x,time="RFS_5Years_with_censored",censor = "RFS_Status_5Years_with_censored",adj=adj)
+r.uu.n2 <- multiHR(dat.uu.n, x=x,time="RFS_5Years_with_censored",censor = "RFS_Status_5Years_with_censored",adj=adj)
+
+r.um.t2 <- multiHR(dat.um.t, x=x,time="RFS_5Years_with_censored",censor = "RFS_Status_5Years_with_censored",adj=adj)
+r.um.n2 <- multiHR(dat.um.n, x=x,time="RFS_5Years_with_censored",censor = "RFS_Status_5Years_with_censored",adj=adj)
+
+```
+
+```{r}
+save.image("HR.taxa.rd")
+load("HR.taxa.rd")
+
+a <- r.uu.t
+b <- r.uu.n
+a <- a[a$fdr<0.05,]
+b <- b[b$P<0.01,]
+
+
+out <- list(
+  UU.tumor.OS = r.uu.t,
+  UU.tumor.RFS = r.uu.t2,
+  UU.NAT.OS = r.uu.n,
+  UU.NAT.RFS = r.uu.n2,
+  ICAM.tumor.OS = r.icam.t
+)
+saveRDS(out,"Table12.data.rds")
+
+out <- list(
+  UU.tumor.OS = r.uu.t,
+  UU.tumor.RFS = r.uu.t2,
+  UU.NAT.OS = r.uu.n,
+  UU.NAT.RFS = r.uu.n2,
+  UM.tumor.OS = r.um.t,
+  UM.tumor.RFS = r.um.t2,
+  UM.NAT.OS = r.um.n,
+  UM.NAT.RFS = r.um.n2,
+  ICAM.tumor.OS = r.icam.t
+)
+out2 <- lapply(out,function(x) {
+  x <- x[grep("Akkermansia",x$x),]
+  rownames(x) <- x$x
+  x
+})
+
+sapply(out2,rownames)
+a <- do.call(rbind,out2)
+write.csv(a,"Table14.1.csv")
+```
+
+
+## 和之前版本对比
+```{r}
+l <- read.xlsx("../../../../3.Documents/Manuscript/202504-Cell/Submited-Cell Multijournal/20250530-Supplementary Tables.xlsx",sheet="12",rowNames = T,startRow = 5)
+l <- na.omit(l)
+a <- read.xlsx("../../../../3.Documents/Manuscript/202504-Cell/Submited-Cell Multijournal/20250530-Supplementary Tables.xlsx",sheet="5A",rowNames = T,startRow = 5)
+all(rownames(l) %in% rownames(a))
+setdiff(rownames(l),rownames(a))
+rownames(a)[grep("polymorphum",rownames(a))]
+rownames(a)[rownames(a)=="s__Fusobacterium nucleatum subsp. polymorphum"] <- "s__Fusobacterium nucleatum subsp.polymorphum"
+all(rownames(l) %in% rownames(a))
+a <- a[rownames(l),]
+rownames(l) <- a$Taxonomic.name.in.UHGG
+rownames(l) <- make.names(rownames(l))
+
+l <- l[,(6:17)]
+l1 <- l[l[,3]<0.05 | l[,8]<0.01,]
+
+a <- r.uu.t[r.uu.t$fdr<0.05,]
+b <- r.uu.n[r.uu.n$P < 0.01,]
+lst.taxa <- union(a$x,b$x)
+all(r.uu.t$x==r.uu.n$x)
+
+d1 <- cbind(r.uu.t[r.uu.t$x %in% lst.taxa,],r.uu.n[r.uu.n$x %in% lst.taxa,])
+d1$If.in.old <- ifelse(d1$x %in% rownames(l1),1,0)
+d1 <- cbind(d1,l1[d1$x,])
+
+rownames(ann) <- make.names(rownames(ann))
+all(d1$x %in% rownames(ann))
+ann <- ann[d1$x,]
+d1 <- cbind(ann[,1:6],d1)
+write.xlsx(d1,"HR.prognostic.taxa.UU.xlsx")
+```
+
+
+```{r}
+a <- r.uu.t[grep("Akkermansia",r.uu.t$x),]
+b <- r.uu.n[grep("Akkermansia",r.uu.n$x),]
+rbind(a,b)
+```
+
+

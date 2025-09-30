@@ -1,0 +1,120 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-12-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1.data input
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(vegan)
+library(ggpubr)
+```
+
+```{r}
+# tumor vs. NAT
+dat1 <- readRDS("../Part1/MaAsLin.Tumor_NAT.rds")
+dat1 <- dat1$UU
+
+# HM vs. nHM
+dat2 <- readRDS("glm.HM.rds")
+dat2 <- dat2$UU
+dat2 <- dat2[rownames(dat1),]
+```
+
+
+## 2.processing data
+```{r}
+# enrichment
+dat1$Enrichment <- ifelse(dat1$Effectsize>0,"Tumor","NAT")
+dat1$Enrichment[dat1$FDR>=0.05] <- "ns"
+
+dat2$Enrichment <- ifelse(dat2$estimate>0,"HM","nHM")
+dat2$Enrichment[dat2$FDR>=0.05] <- "ns"
+
+a <- union(
+  rownames(dat1),#[dat1$FDR<0.05],
+  rownames(dat2)#[dat2$FDR<0.05]
+)
+
+dat1 <- dat1[a,]
+dat2 <- dat2[a,]
+```
+
+
+## 3.valcano plot (UU)
+
+```{r}
+dat <- data.frame(
+  row.names = rownames(dat1),
+  FDR.Tumor = dat1$FDR,
+  FDR.Hyper = dat2$FDR,
+  rho1 = dat2$estimate,
+  rho2 = dat1$Effectsize,
+  Enrich1 = dat2$Enrichment,
+  Enrich2 = dat1$Enrichment
+)
+dat <- na.omit(dat)
+#dat <- dat[dat$FDR.Tumor<0.05 | dat$FDR.Hyper<0.05,]
+dat$x1 <- -log10(dat$FDR.Hyper) * sign(dat$rho1)
+dat$x2 <- -log10(dat$FDR.Tumor) * sign(dat$rho2)
+
+# circle size: RA of species
+a <- readRDS("../../1.data.process/kk2.v2/Data.UCAN.rmHOST.rds")
+pr <- a$RA$WGS
+phe <- a$phe[grep("UM",rownames(a$phe),invert = T),]
+pr <- pr[phe$Tumor_ID,rownames(dat)]
+abun <- data.frame(mean=apply(pr,2,mean))
+dat$size <- abun[rownames(dat),1]
+dat$size[is.na(dat$size)] <- min(dat$size,na.rm = T)
+
+a <- dat[order(dat$size,decreasing = T),]
+a$lab <- ""
+a$lab[1:10] <- rownames(a)[1:10]
+
+dat$lab <- ifelse(rownames(dat) %in% rownames(a)[1:10],rownames(dat),"")
+dat$lab[grep("Fuso",rownames(dat))] <- rownames(dat)[grep("Fuso",rownames(dat))]
+
+dat$g <- dat$Enrich1
+dat$g[dat$Enrich2!="Tumor"] <- "ns"
+```
+
+
+```{r}
+ggplot(dat,aes(x1,x2))+
+  geom_point(aes(fill=g,size=size),shape=21,color="white")+
+  geom_vline(xintercept = c(-log10(0.05),log10(0.05)),linetype="dashed")+
+  geom_hline(yintercept = c(-log10(0.05),log10(0.05)),linetype="dashed")+
+  geom_vline(xintercept = 0)+
+  geom_hline(yintercept = 0)+
+  ggrepel::geom_text_repel(aes(label=lab),max.overlaps = 100,point.padding = unit(0.00001, "cm"),force = 2000,size=2)+
+  xlab("nHM vs. HM\n-log10(adjusted P)")+ylab("Nomal vs. Tumor\n-log10(adjusted P)")+
+  scale_fill_manual(values = c("#ea7070","#4094ab","gray50"))+
+  scale_size_continuous(range = c(2,12))+
+  theme_bw()+
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 13),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    panel.grid = element_blank()
+  )
+```
+
+
+```{r}
+ggsave("Fig3c.valcano.HM.taxa.pdf",width = 7,height = 4)
+
+```
+
+
+
+
+
+

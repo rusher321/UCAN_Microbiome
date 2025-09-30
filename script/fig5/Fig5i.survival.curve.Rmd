@@ -20,21 +20,24 @@ library(forestploter)
 
 ```{r}
 mrs <- readRDS("MRS.UCAN_ICAM.WGS.rds")
-a <- readRDS("MRS.ICAM.16S.rds")
+a <- readRDS("../../../4.Part4/MRS/MRS.ICAM.16S.rds")
 mrs$ICAM.Tumor.16S <- a$ICAM.Tumor.16S
 mrs$ICAM.NAT.16S <- a$ICAM.NAT.16S
 
 mrs <- lapply(mrs,function(x){
   x$Group = ifelse(x$Index >= median(x$Index),"High MRS","Low MRS")
   x$Group = factor(x$Group,levels = c("Low MRS","High MRS"))
+  rownames(x) <- gsub(".*-(U.*)-.*","\\1",rownames(x))
   x
 })
+
+
 ```
 
 ```{r}
 # data
-phe.ucan <- read.csv("../../../2.SourceData/01.phe/20230727-CRC-SW.20230704-v5.clinical.csv",row.names = 1)
-phe.icam <- readRDS("../../../2.SourceData/00.SourceData/phenotype.ICAM.rds")
+phe.ucan <- read.csv("../../../../2.SourceData/01.phe/20230727-CRC-SW.20230704-v5.clinical.csv",row.names = 1)
+phe.icam <- readRDS("../../../../2.SourceData/00.SourceData/phenotype.ICAM.rds")
 phe.ucan$Tumor_Site <- ifelse(phe.ucan$Tumor_Site=="Right_Colon","Right","Left")
 phe.ucan$Age <- phe.ucan$Age_At_Diagnosis
 phe.icam$AJCC_path_stage <- as.character(phe.icam$AJCC_path_stage)
@@ -69,12 +72,20 @@ d7 <- cbind(dat.icam[rownames(mrs$ICAM.NAT.16S),],adj.icam[rownames(mrs$ICAM.NAT
 
 
 # reads number
-nReads <- readRDS("../../../2.SourceData/00.SourceData/ReadsNumber.UCAN_ICAM.rds")
-d1$ReadsNumber <- nReads$UU.Tumor[rownames(d1),1]
-d2$ReadsNumber <- nReads$UM.Tumor[rownames(d2),1]
-d3$ReadsNumber <- nReads$ICAM.Tumor.WGS[rownames(d3),1]
-d4$ReadsNumber <- nReads$UU.NAT[rownames(d4),1]
-d5$ReadsNumber <- nReads$UM.NAT[rownames(d5),1]
+nReads <- read.csv("../../1.data.process/kk2.v2/reads.summary.csv",row.names = 1)
+nReads.t <- nReads[nReads$sampleType=="Tumor",]
+nReads.n <- nReads[nReads$sampleType=="NAT",]
+rownames(nReads.t) <- nReads.t$patientID
+rownames(nReads.n) <- nReads.n$patientID
+
+d1$ReadsNumber <- nReads.t[rownames(d1),9]
+d2$ReadsNumber <- nReads.t[rownames(d2),9]
+d3$ReadsNumber <- nReads.t[rownames(d3),9]
+d4$ReadsNumber <- nReads.n[rownames(d4),9]
+d5$ReadsNumber <- nReads.n[rownames(d5),9]
+
+
+dat.t <- rbind(d1,d2)
 ```
 
 
@@ -98,6 +109,8 @@ survplotFunction <- function(dat,f,title){
     cumevents = T,title=title
   )
 }
+
+
 f <- "Surv(OS_time,OS_status)~Group"
 p1 <- survplotFunction(d1,f,"UU (MRS-T)")
 p2 <- survplotFunction(d2,f,"UM (MRS-T)")
@@ -117,17 +130,26 @@ p8 <- survplotFunction(d3,f,"AC-ICAM (MRS-T)")
 res <- arrange_ggsurvplots(
   x = list(p1,p4,p2,p5,p3,p3,p6,p9,p7,p10,p8,p8),print = T,ncol = 6,nrow = 2
 )
-
-
-ggsave("survival.MRS.median2.pdf",res,width = 30,height = 10)
 ```
 
 
 ```{r}
 l <- list(p1,p2,p3,p4,p5,p6,p7,p8,p9,p10)
 names(l) <- paste0("r",1:10)
-for(x in names(l)){
+
+
+r$HR2 <- gsub(" to ","-",r$HR2)
+r2$HR2 <- gsub(" to ","-",r2$HR2)
+
+for(x in 1:length(l)){
   tmp <- l[[x]]
+  lab <- paste0(
+    "HRcat = ",r[x,"HR2"],"\nP = ",formatC(r[x,"P"],digits = 3),
+    "\nHRcon = ",r2[x,"HR2"],"\nP = ",formatC(r2[x,"P"],digits = 3)
+  )
+  print(lab)
+  tmp$plot <- tmp$plot +
+    annotate("text",label=lab,x=0,y=0.25,hjust=0)
   l[[x]] <- ggarrange(tmp$plot,tmp$cumevents,nrow = 2,ncol = 1,align = "hv",heights = c(2,1))
 }
 
@@ -138,8 +160,6 @@ ggsave("survival.MRS.median4.pdf",width = 16,height = 8)
 
 ```{r}
 # 16S
-d6 <- d6[d6$Tumor_Stage != "4",]
-d7 <- d7[rownames(d6),]
 f <- "Surv(OS_time,OS_status)~Group"
 p1 <- survplotFunction(d6,f,"AC-ICAM (16S-T)")
 p2 <- survplotFunction(d7,f,"AC-ICAM (16S-N)")
@@ -158,101 +178,6 @@ for(x in names(l)){
 
 res <- ggarrange(plotlist = l,nrow = 2,ncol = 2)
 ggsave("survival.MRS.ICAM-16S.v2.pdf",res,width = 6,height = 8)
-```
-
-
-
-
-
-## 3.adjusted HR
-
-```{r}
-HR <- function(data,x,f,adj=NULL){
-  x1 <- make.names(x)
-  data[,x1] <- data[,x]
-  data <- data[!is.na(data[,x1]),]
-  lab.x <- paste(x1,collapse = "+")
-  formula <- paste0(f,lab.x)
-  if(!is.null(adj)){
-    lab.adj <- paste(adj,collapse = "+")
-    formula <- paste0(formula,"+",lab.adj)
-  }
-  formula <- as.formula(formula)
-  print(formula)
-  fit <- coxph(formula,data=data)
-  a <- summary(fit)
-  # output
-  out <- cbind(
-    a$coefficients[,c(1,4,5),drop=F],
-    a$conf.int[,c(1,3,4),drop=F]
-  )
-  colnames(out) <- c("coef","z","P","HR","lower.95","upper.95")
-  out <- out %>%
-    as.data.frame() %>%
-    rownames_to_column(var = "x") %>%
-    mutate(
-      HR2 = paste0(round(HR,2)," (",round(lower.95,2)," to ",round(upper.95,2),")")
-    )
-  out[1,]
-}
-HR_Forest <- function(dat){
-  dat$` ` <- paste(rep(" ", 20), collapse = " ")
-  colnames(dat)[colnames(dat)=="HR2"] <- "HR (95% CI)"
-  forest(
-    data = dat[,c(1,9,8,4),drop=F],
-    est=dat$HR,
-    lower = dat$lower.95,
-    upper = dat$upper.95,
-    ci_column = 2,
-    ref_line = 1
-  )
-}
-
-
-f1 <- "Surv(OS_time,OS_status)~"
-d1$Tumor_Site <- phe.ucan[rownames(d1),"Tumor_Site"]
-r1 <- HR(d1,x="Group",f=f1,adj = c(colnames(adj.uu),"ReadsNumber"))
-r2 <- HR(d2,x="Group",f=f1,adj = c(colnames(adj.um),"ReadsNumber"))
-r3 <- HR(d3,x="Group",f=f1,adj = c(colnames(adj.icam)))
-r4 <- HR(d4,x="Group",f=f1,adj = c(colnames(adj.uu),"ReadsNumber"))
-r5 <- HR(d5,x="Group",f=f1,adj = c(colnames(adj.um),"ReadsNumber"))
-r.os <- rbind(r1,r2,r3,r4,r5)
-r.os$x <- c("UU-T","UM-T","AC-ICAM-T","UU-N","UM-N")
-
-f1 <- "Surv(RFS_time,RFS_status)~"
-d1$Tumor_Site <- phe.ucan[rownames(d1),"Tumor_Site"]
-r1 <- HR(d1,x="Group",f=f1,adj = c(colnames(adj.uu),"ReadsNumber"))
-r2 <- HR(d2,x="Group",f=f1,adj = c(colnames(adj.um),"ReadsNumber"))
-r4 <- HR(d4,x="Group",f=f1,adj = c(colnames(adj.uu),"ReadsNumber"))
-r5 <- HR(d5,x="Group",f=f1,adj = c(colnames(adj.um),"ReadsNumber"))
-f1 <- "Surv(PFS_time,PFS_status)~"
-r3 <- HR(d3,x="Group",f=f1,adj = c(colnames(adj.icam)))
-
-r.rfs <- rbind(r1,r2,r3,r4,r5)
-r.rfs$x <- c("UU-T","UM-T","AC-ICAM-T","UU-N","UM-N")
-
-r <- rbind(r.os,r.rfs)
-r$Group <- rep(c("OS","RFS"),each=5)
-write.xlsx(r,"Summary.MRS.HR.median.xlsx")
-```
-
-
-
-
-
-```{r}
-f1 <- "Surv(OS_time,OS_status)~"
-r1 <- HR(d6,x="Group",f=f1,adj=colnames(adj.icam))
-r2 <- HR(d7,x="Group",f=f1,adj=colnames(adj.icam))
-
-f1 <- "Surv(PFS_time,PFS_status)~"
-r3 <- HR(d6,x="Group",f=f1,adj=colnames(adj.icam))
-r4 <- HR(d7,x="Group",f=f1,adj=colnames(adj.icam))
-
-r <- rbind(r1,r2,r3,r4)
-r$x <- c("MRS-T (OS)","MRS-N (OS)","MRS-T (PFS)","MRS-N (PFS)")
-r
-write.csv(r,"Summary.MRS.HR.median.ICMA.16S.csv")
 ```
 
 
